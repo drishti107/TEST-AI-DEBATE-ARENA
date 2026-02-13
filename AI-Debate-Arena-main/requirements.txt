@@ -1,8 +1,12 @@
 streamlit
-plotly
-gtts
-langchain-google-genai
-langchain-core
-pydantic
 pandas
+plotly
+pydantic
+gtts
+Pillow
 google-generativeai
+langchain-core
+langchain-google-genai
+langchain-huggingface
+langchain-groq
+python-dotenv
