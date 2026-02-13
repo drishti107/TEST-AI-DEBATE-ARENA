@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from typing import List
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="AI Debate Arena 8.0", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="AI Debate Arena 9.0", page_icon="⚔️", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -22,8 +22,9 @@ st.markdown("""
     .ai-health > div > div > div > div { background-color: #FF4B4B; }
     .crowd-reaction { font-style: italic; color: #FFD700; text-align: center; font-size: 1.1em; margin-top: 10px; }
     
-    /* IMPACT NOTIFICATION STYLE */
-    .toast-popup { font-size: 1.2rem !important; font-weight: bold !important; }
+    .report-card { background-color: #1E1E1E; padding: 20px; border-radius: 10px; border: 1px solid #333; margin-top: 20px; }
+    .best-point { border-left: 4px solid #00FF41; padding-left: 10px; margin-bottom: 15px; }
+    .worst-point { border-left: 4px solid #FF4B4B; padding-left: 10px; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,9 +46,9 @@ class TurnScore(BaseModel):
 
 class FinalAnalysis(BaseModel):
     winner: str
-    best_point_user: str
-    weakest_point_user: str
-    improvement_tips: List[str]
+    best_point_user: str = Field(..., description="Quote the user's strongest argument")
+    weakest_point_user: str = Field(..., description="Quote the user's weakest argument")
+    improvement_tips: List[str] = Field(..., description="3 specific things the user should remember to improve")
 
 # --- AI ENGINE ---
 class DebateEngine:
@@ -108,19 +109,11 @@ class DebateEngine:
             return res.content
         except: return "I disagree."
 
-    def judge_turn(self, topic, user_arg, ai_arg, time_taken):
-        penalty_text = ""
-        if time_taken > 90:
-            penalty_text = f"SEVERE PENALTY: The User took {time_taken} seconds (Over 1m 30s). Deduct 25 points from their logic score."
-        elif time_taken > 45:
-             penalty_text = f"NOTE: The User took {time_taken} seconds. Apply minor penalty for hesitation."
-            
+    def judge_turn(self, topic, user_arg, ai_arg):
         template = f"""
         Judge turn. Topic: {{topic}}.
-        User ({time_taken}s delay): "{{user_arg}}"
+        User: "{{user_arg}}"
         AI: "{{ai_arg}}"
-        
-        {penalty_text}
         
         Score logic (0-100) strictly based on facts and reasoning.
         """
@@ -133,7 +126,16 @@ class DebateEngine:
 
     def generate_report(self, history, topic):
         hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
-        template = "Analyze debate: {topic}\n{history}\nProvide coaching report."
+        template = """
+        Analyze the full debate history. Topic: {topic}.
+        History: {history}
+        
+        Task:
+        1. Identify the Winner.
+        2. Find the User's BEST point (quote it).
+        3. Find the User's WEAKEST point (quote it).
+        4. Provide 3 specific tips for the user to improve next time.
+        """
         try:
             structured = self.llm.with_structured_output(FinalAnalysis)
             prompt = ChatPromptTemplate.from_template(template)
@@ -142,48 +144,6 @@ class DebateEngine:
         except: return None
 
 engine = DebateEngine()
-
-# --- HELPER: HIGH VISIBILITY TIMER ---
-def display_timer():
-    timer_html = """
-        <div style="
-            text-align: center; 
-            margin-bottom: 15px; 
-            padding: 10px; 
-            background-color: #2b2b2b; 
-            border: 2px solid #FF4B4B; 
-            border-radius: 10px;">
-            <span style="font-size: 1.2em; color: white;">⏱️ Time Remaining: </span>
-            <span id="time" style="font-size: 1.5em; font-weight: bold; color: #FF4B4B;">01:30</span>
-        </div>
-        <script>
-        function startTimer(duration, display) {
-            var timer = duration, minutes, seconds;
-            var interval = setInterval(function () {
-                minutes = parseInt(timer / 60, 10);
-                seconds = parseInt(timer % 60, 10);
-
-                minutes = minutes < 10 ? "0" + minutes : minutes;
-                seconds = seconds < 10 ? "0" + seconds : seconds;
-
-                display.textContent = minutes + ":" + seconds;
-
-                if (--timer < 0) {
-                    display.textContent = "TIME UP! (Penalty Applied)";
-                    display.style.color = "red";
-                    clearInterval(interval);
-                }
-            }, 1000);
-        }
-
-        window.onload = function () {
-            var ninetySeconds = 90,
-                display = document.querySelector('#time');
-            startTimer(ninetySeconds, display);
-        };
-        </script>
-    """
-    st.components.v1.html(timer_html, height=85)
 
 # --- SESSION STATE ---
 if "session_id" not in st.session_state:
@@ -194,12 +154,11 @@ if "session_id" not in st.session_state:
     st.session_state.started = False
     st.session_state.crowd_text = "The arena is silent..."
     st.session_state.last_processed = "" 
-    st.session_state.start_time = time.time()
     st.session_state.audio_key = "audio_1" 
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Arena 8.0")
+    st.title("⚙️ Arena 9.0")
     mode = st.radio("Mode:", ["User vs AI", "AI vs AI (Simulation)"])
     enable_audio = st.toggle("Enable AI Voice 🔊", value=True)
     
@@ -218,6 +177,7 @@ with st.sidebar:
 
     st.divider()
     
+    # TOPIC
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
         topic_input = st.text_input("Topic:", "Universal Basic Income")
@@ -234,6 +194,13 @@ with st.sidebar:
     if "topic_preset" in st.session_state:
         st.info(f"Selected: {final_topic}")
 
+    # QUIT BUTTON (Only active during User vs AI)
+    if mode == "User vs AI" and st.session_state.started:
+        st.divider()
+        if st.button("🏳️ Quit & Analyze", type="primary", use_container_width=True):
+            st.session_state.user_hp = 0  # Instant Loss
+            st.rerun()
+
     if mode == "User vs AI":
         persona = st.selectbox("Opponent:", ["Logical Vulcan", "Sarcastic Troll", "Philosopher", "Devil's Advocate"])
         ai_side = st.radio("AI Stance:", ["Against", "For"])
@@ -249,7 +216,6 @@ with st.sidebar:
             st.session_state.topic = final_topic
             st.session_state.ai_side = ai_side
             st.session_state.last_processed = "" 
-            st.session_state.start_time = time.time()
             st.session_state.audio_key = str(uuid.uuid4())
             
             if who_starts == "AI (Opponent)":
@@ -275,7 +241,7 @@ with st.sidebar:
             st.rerun()
 
 # --- MAIN UI ---
-st.title("⚔️ AI Debate Arena 8.0")
+st.title("⚔️ AI Debate Arena 9.0")
 
 if not st.session_state.started:
     st.info("👈 Configure the arena sidebar to begin.")
@@ -297,14 +263,42 @@ if st.session_state.mode == "User":
 # --- MODE 1: USER VS AI ---
 if st.session_state.mode == "User":
     
-    # Game Over Logic
+    # --- GAME OVER / QUIT LOGIC ---
     if st.session_state.user_hp <= 0 or st.session_state.ai_hp <= 0:
         winner = "YOU" if st.session_state.user_hp > 0 else "AI"
-        st.balloons() if winner == "YOU" else None
-        st.error(f"GAME OVER. Winner: {winner}")
-        if st.button("Analyze Match"):
+        
+        if winner == "YOU":
+            st.balloons()
+            st.success(f"🏆 VICTORY! You defeated {st.session_state.persona}!")
+        else:
+            st.error(f"💀 DEFEAT! {st.session_state.persona} wins!")
+
+        st.markdown("## 📊 Debate Analysis")
+        with st.spinner("The judges are compiling your performance report..."):
             rep = engine.generate_report(st.session_state.messages, st.session_state.topic)
-            if rep: st.markdown(f"**Coaching:** {rep.improvement_tips[0]}")
+            
+            if rep:
+                st.markdown(f"""
+                <div class="report-card">
+                    <div class="best-point">
+                        <strong>💎 Your Best Point:</strong><br>
+                        <em>"{rep.best_point_user}"</em>
+                    </div>
+                    <div class="worst-point">
+                        <strong>📉 Your Weakest Link:</strong><br>
+                        <em>"{rep.weakest_point_user}"</em>
+                    </div>
+                    <strong>💡 Points to Remember (Coaching Tips):</strong>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                for i, tip in enumerate(rep.improvement_tips):
+                    st.info(f"{i+1}. {tip}")
+            
+        if st.button("Start New Debate"):
+            st.session_state.started = False
+            st.rerun()
+            
         st.stop()
 
     # Chat History
@@ -314,11 +308,8 @@ if st.session_state.mode == "User":
             if "audio" in msg and msg["audio"]:
                 st.audio(msg["audio"], format="audio/mp3")
 
-    # --- TIMER & INPUT ---
+    # --- INPUT ---
     st.markdown("### Make your move")
-    display_timer()
-    
-    time_elapsed = int(time.time() - st.session_state.start_time)
     
     text_input = st.chat_input("Type argument...")
     voice_input = st.audio_input("🎤 Tap to Speak", key=st.session_state.audio_key)
@@ -334,7 +325,6 @@ if st.session_state.mode == "User":
 
     # Processing Loop
     if final_prompt:
-        # Prevent replying if it's not user's turn (AI double speak check)
         if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
             pass 
         else:
@@ -344,7 +334,7 @@ if st.session_state.mode == "User":
             # --- AI TURN ---
             with st.chat_message("assistant"):
                 with st.spinner(f"{st.session_state.persona} is thinking..."):
-                    time.sleep(1.0) # Pause for effect
+                    time.sleep(1.0)
                     
                     rebuttal = engine.generate_rebuttal(
                         st.session_state.topic, final_prompt, st.session_state.messages, 
@@ -358,26 +348,22 @@ if st.session_state.mode == "User":
                     st.session_state.messages.append({"role": "assistant", "content": rebuttal, "audio": audio_fp})
                     
                     # Score & Metrics
-                    score = engine.judge_turn(st.session_state.topic, final_prompt, rebuttal, time_elapsed)
+                    score = engine.judge_turn(st.session_state.topic, final_prompt, rebuttal)
                     
-                    # --- NEW BRUTAL DAMAGE LOGIC ---
+                    # Damage Logic (Direct Difference)
                     user_dmg = 0
                     ai_dmg = 0
                     
                     if score.winner == "ai":
-                        # Full difference damage
                         user_dmg = int(score.ai_logic - score.user_logic)
-                        if user_dmg < 10: user_dmg = 10 # Minimum chip damage
-                        
+                        if user_dmg < 10: user_dmg = 10
                         st.session_state.user_hp = max(0, st.session_state.user_hp - user_dmg)
                         st.session_state.crowd_text = f"Ouch! {score.fallacies_detected} detected!"
                         st.toast(f"💥 HIT! You lost {user_dmg} HP!", icon="🩸")
                         
                     elif score.winner == "user":
-                        # Full difference damage
                         ai_dmg = int(score.user_logic - score.ai_logic)
-                        if ai_dmg < 10: ai_dmg = 10 # Minimum chip damage
-                        
+                        if ai_dmg < 10: ai_dmg = 10
                         st.session_state.ai_hp = max(0, st.session_state.ai_hp - ai_dmg)
                         st.session_state.crowd_text = "Superior logic! Crowd cheers!"
                         st.toast(f"🎯 CRITICAL! AI lost {ai_dmg} HP!", icon="🔥")
@@ -386,8 +372,6 @@ if st.session_state.mode == "User":
                         st.session_state.crowd_text = "Even exchange."
                         st.toast("🛡️ Blocked! No damage.", icon="🛡️")
                     
-                    # Reset Timer & Sleep to allow toast visibility
-                    st.session_state.start_time = time.time()
                     time.sleep(2.0) 
                     st.rerun()
 
