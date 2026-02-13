@@ -1,25 +1,30 @@
 import streamlit as st
 import uuid
 import time
+import pandas as pd
+import plotly.graph_objects as go
+from gtts import gTTS
+from io import BytesIO
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing import List
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="AI Debate Arena", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="AI Debate Arena 2.0", page_icon="⚔️", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""
 <style>
     .stProgress > div > div > div > div { background-color: #00FF41; }
     .ai-health > div > div > div > div { background-color: #FF4B4B; }
-    .toast-popup { background-color: #333; color: white; }
-    .report-box { border: 1px solid #444; padding: 20px; border-radius: 10px; background-color: #222; }
+    .hud-container { background-color: #1E1E1E; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #333; }
+    .stat-box { text-align: center; }
+    .crowd-reaction { font-style: italic; color: #FFD700; text-align: center; font-size: 0.9em; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- API KEY SETUP ---
+# --- API KEY ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
@@ -27,348 +32,331 @@ except:
 
 # --- DATA MODELS ---
 class TurnScore(BaseModel):
-    user_logic: int = Field(..., description="0-100 score for user logic")
-    user_relevance: int = Field(..., description="0-100 score for user relevance")
-    ai_logic: int = Field(..., description="0-100 score for AI rebuttal strength")
-    ai_relevance: int = Field(..., description="0-100 score for AI directness")
-    winner: str = Field(..., description="'user' or 'ai' or 'draw'")
-    reasoning: str = Field(..., description="Why this side won the turn")
+    user_logic: int = Field(..., description="0-100 score for logic")
+    ai_logic: int = Field(..., description="0-100 score for logic")
+    winner: str = Field(..., description="'user', 'ai', or 'draw'")
+    reasoning: str = Field(..., description="Brief reason for the score")
+    fallacies_detected: str = Field(..., description="Name any logical fallacies used (or 'None')")
 
 class FinalAnalysis(BaseModel):
-    winner: str = Field(..., description="Overall winner")
-    best_point_user: str = Field(..., description="The user's strongest argument")
-    weakest_point_user: str = Field(..., description="The user's weakest moment")
-    improvement_tips: List[str] = Field(..., description="3 specific tips to improve")
+    winner: str
+    best_point_user: str
+    weakest_point_user: str
+    improvement_tips: List[str]
 
 # --- AI ENGINE ---
 class DebateEngine:
     def __init__(self):
         try:
             self.llm = ChatGoogleGenerativeAI(
-                model="gemini-2.0-flash", # Updated to latest fast model
+                model="gemini-2.5-flash", 
                 google_api_key=GOOGLE_API_KEY,
-                temperature=0.8
+                temperature=0.7
             )
         except Exception as e:
             st.error(f"Initialization Error: {e}")
 
-    def generate_opening(self, topic: str, persona: str, stance: str):
-        template = """
-        You are debating as: {persona}. 
-        Topic: "{topic}".
-        Your Stance: You must ARGUE {stance} this topic.
-        Generate a strong, 2-sentence opening argument.
-        """
+    def speak(self, text):
+        """Converts text to audio bytes"""
         try:
-            prompt = ChatPromptTemplate.from_template(template)
-            chain = prompt | self.llm
-            response = chain.invoke({"topic": topic, "persona": persona, "stance": stance})
-            return response.content
-        except Exception as e:
-            return "Let's debate."
-
-    def generate_rebuttal(self, topic: str, argument: str, history: list, persona: str, difficulty: str, stance: str):
-        # Flatten history for context
-        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-5:]])
-        
-        template = """
-        Role: {role} ({difficulty} Mode)
-        Topic: "{topic}"
-        Stance: {stance}
-        
-        Conversation History:
-        {history}
-        
-        Opponent's LATEST Argument: "{argument}"
-        
-        Task: 
-        Directly rebut the opponent's latest argument. 
-        Do not just say "I disagree". 
-        Use logic and facts based on your persona.
-        Keep it sharp (under 4 sentences).
-        """
-        try:
-            prompt = ChatPromptTemplate.from_template(template)
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "role": persona, "difficulty": difficulty, "topic": topic, 
-                "history": history_text, "argument": argument, "stance": stance
-            })
-            return response.content
-        except Exception as e:
-            return f"SYSTEM ERROR: {str(e)}"
-
-    def judge_turn(self, topic: str, user_arg: str, ai_arg: str):
-        template = """
-        Act as an Impartial Debate Judge.
-        Topic: {topic}
-        
-        User Argument: "{user_arg}"
-        AI Rebuttal: "{ai_arg}"
-        
-        Task:
-        1. Score User's Logic (0-100).
-        2. Score AI's Logic (0-100).
-        3. Score Relevance for both (0-100).
-        4. Decide the winner based on logic scores.
-        """
-        try:
-            structured_llm = self.llm.with_structured_output(TurnScore)
-            prompt = ChatPromptTemplate.from_template(template)
-            chain = prompt | structured_llm
-            return chain.invoke({"topic": topic, "user_arg": user_arg, "ai_arg": ai_arg})
-        except Exception as e:
-            return TurnScore(user_logic=50, user_relevance=50, ai_logic=50, ai_relevance=50, winner="draw", reasoning="Error")
-
-    def generate_final_report(self, history: list, topic: str):
-        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
-        template = """
-        Analyze this debate. Topic: {topic}. 
-        History: {history}.
-        Provide a coaching report for the User (Best point, Weakest point, 3 Tips).
-        """
-        try:
-            structured_llm = self.llm.with_structured_output(FinalAnalysis)
-            prompt = ChatPromptTemplate.from_template(template)
-            chain = prompt | structured_llm
-            return chain.invoke({"history": history_text, "topic": topic})
-        except Exception as e:
+            tts = gTTS(text=text, lang='en')
+            fp = BytesIO()
+            tts.write_to_fp(fp)
+            return fp
+        except:
             return None
 
-# Initialize Engine
+    def generate_rebuttal(self, topic, argument, history, persona, stance):
+        # Flatten history
+        hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in history[-4:]])
+        template = """
+        You are {persona}. Topic: {topic}. Stance: {stance}.
+        History: {hist_text}
+        Opponent says: "{argument}"
+        
+        Reply directly. Be sharp, witty, and logical. 
+        Max 3 sentences.
+        """
+        try:
+            prompt = ChatPromptTemplate.from_template(template)
+            chain = prompt | self.llm
+            res = chain.invoke({"persona": persona, "topic": topic, "stance": stance, "hist_text": hist_text, "argument": argument})
+            return res.content
+        except: return "I disagree."
+
+    def judge_turn(self, topic, user_arg, ai_arg):
+        template = """
+        Judge this debate turn. Topic: {topic}.
+        A: "{user_arg}"
+        B: "{ai_arg}"
+        
+        Score logic (0-100). Identify fallacies.
+        """
+        try:
+            structured = self.llm.with_structured_output(TurnScore)
+            prompt = ChatPromptTemplate.from_template(template)
+            chain = prompt | structured
+            return chain.invoke({"topic": topic, "user_arg": user_arg, "ai_arg": ai_arg})
+        except: return TurnScore(user_logic=50, ai_logic=50, winner="draw", reasoning="Error", fallacies_detected="None")
+
+    def generate_report(self, history, topic):
+        hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+        template = "Analyze debate: {topic}\n{history}\nProvide coaching report."
+        try:
+            structured = self.llm.with_structured_output(FinalAnalysis)
+            prompt = ChatPromptTemplate.from_template(template)
+            chain = prompt | structured
+            return chain.invoke({"history": hist_text, "topic": topic})
+        except: return None
+
 engine = DebateEngine()
+
+# --- HELPER: PLOTLY CHART ---
+def plot_debate_flow(score_history):
+    if not score_history: return None
+    
+    df = pd.DataFrame(score_history)
+    df['Turn'] = range(1, len(df) + 1)
+    
+    # Calculate Momentum (Cumulative Logic Difference)
+    df['Momentum'] = df['user_score'] - df['ai_score']
+    
+    fig = go.Figure()
+    
+    # Add Zero Line
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Neutral")
+    
+    # Plot Momentum
+    fig.add_trace(go.Scatter(
+        x=df['Turn'], y=df['Momentum'],
+        mode='lines+markers',
+        name='Advantage',
+        line=dict(color='#00FF41', width=3),
+        fill='tozeroy'
+    ))
+    
+    fig.update_layout(
+        title="⚔️ Momentum of Debate (Logic Flow)",
+        xaxis_title="Turn Number",
+        yaxis_title="Advantage (User vs AI)",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'),
+        height=250,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig
 
 # --- SESSION STATE ---
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.messages = []
+    st.session_state.score_history = [] # For the chart
     st.session_state.user_hp = 100
     st.session_state.ai_hp = 100
     st.session_state.started = False
-    st.session_state.mode = "User vs AI" # Default mode
+    st.session_state.crowd_text = "The audience is waiting..."
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Arena Setup")
-    
-    # NEW: Mode Selection
-    mode = st.radio("Select Mode:", ["User vs AI (Game)", "AI vs AI (Watch & Learn)"])
-    st.session_state.mode = mode
+    st.title("⚙️ Arena 2.0")
+    mode = st.radio("Mode:", ["User vs AI", "AI vs AI (Simulation)"])
+    enable_audio = st.toggle("Enable Voice Output 🔊", value=True)
     
     st.divider()
+    topic = st.text_input("Topic:", "Universal Basic Income")
     
-    topic = st.text_input("Topic:", "AI will replace doctors")
-    
-    if mode == "User vs AI (Game)":
-        col1, col2 = st.columns(2)
-        with col1: persona = st.selectbox("Opponent:", ["Logical Vulcan", "Aggressive Troll", "Socratic Teacher"])
-        with col2: difficulty = st.selectbox("Difficulty:", ["Easy", "Medium", "Hard"])
-        ai_side = st.radio("AI's Stance:", ["AGAINST", "IN FAVOUR"], index=0)
-        
-        start_btn = st.button("Start Duel 🔥", use_container_width=True)
-        
-    else: # AI vs AI Mode
-        st.info("Watch two AI personas debate to learn strategies.")
-        col1, col2 = st.columns(2)
-        with col1: 
-            persona_1 = st.selectbox("Proponent (For):", ["Logical Vulcan", "Passionate Activist", "Elon Musk-esque"])
-        with col2: 
-            persona_2 = st.selectbox("Opponent (Against):", ["Socratic Teacher", "Aggressive Troll", "Shakespearean Poet"])
-        
-        difficulty = "Hard" # Force hard for better quality
-        start_btn = st.button("Run Simulation 🎬", use_container_width=True)
-
-    # Logic to Initialize Game/Sim
-    if start_btn:
-        st.session_state.messages = []
-        st.session_state.user_hp = 100
-        st.session_state.ai_hp = 100
-        st.session_state.topic = topic
-        st.session_state.started = True
-        
-        if mode == "User vs AI (Game)":
+    if mode == "User vs AI":
+        persona = st.selectbox("Opponent:", ["Logical Vulcan", "Sarcastic Troll", "Philosopher"])
+        ai_side = st.radio("AI Stance:", ["Against", "For"])
+        if st.button("Start Debate 🔥", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.score_history = []
+            st.session_state.user_hp = 100
+            st.session_state.ai_hp = 100
+            st.session_state.started = True
+            st.session_state.mode = "User"
             st.session_state.persona = persona
-            st.session_state.difficulty = difficulty
+            st.session_state.topic = topic
             st.session_state.ai_side = ai_side
-            with st.spinner("AI Entering Arena..."):
-                opening = engine.generate_opening(topic, persona, ai_side)
-                st.session_state.messages.append({"role": "assistant", "content": opening})
             st.rerun()
             
-        else: # AI vs AI Setup
-            st.session_state.persona_1 = persona_1
-            st.session_state.persona_2 = persona_2
-            st.session_state.sim_running = True # Trigger the simulation loop
-
-    # --- LIVE SCOREBOARD (Only for User Game) ---
-    if st.session_state.started and mode == "User vs AI (Game)":
-        st.divider()
-        st.subheader("Live Health 🛡️ ")
-        st.write(f"**You:** {st.session_state.user_hp}/100")
-        st.progress(st.session_state.user_hp / 100)
-        st.write(f"**Opponent:** {st.session_state.ai_hp}/100")
-        st.progress(st.session_state.ai_hp / 100)
-        
-        st.divider()
-        if st.button("QUIT ☠️", type="primary", use_container_width=True):
-            st.session_state.user_hp = 0
+    else: # AI vs AI
+        p1 = st.selectbox("Proponent:", ["Elon Musk-esque", "Idealist Student"])
+        p2 = st.selectbox("Opponent:", ["Grumpy Boomer", "Data Scientist"])
+        if st.button("Run Simulation 🎬", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.score_history = []
+            st.session_state.started = True
+            st.session_state.mode = "Sim"
+            st.session_state.p1 = p1
+            st.session_state.p2 = p2
+            st.session_state.topic = topic
+            st.session_state.sim_active = True
             st.rerun()
 
 # --- MAIN UI ---
-st.title("⚔️ AI Debate Arena")
+st.title("⚔️ AI Debate Arena 2.0")
 
 if not st.session_state.started:
-    st.info("👈 Configure setup in the sidebar to begin.")
+    st.info("👈 Configure the arena to begin.")
     st.stop()
 
-# ==========================================
-# MODE 1: USER VS AI (Original Game Logic)
-# ==========================================
-if st.session_state.mode == "User vs AI (Game)":
+# --- HUD (Heads Up Display) ---
+if st.session_state.mode == "User":
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        st.metric("Your Health", f"{st.session_state.user_hp}%", delta=None)
+        st.progress(st.session_state.user_hp/100)
+    with col2:
+        st.markdown(f"<div class='crowd-reaction'>📢 {st.session_state.crowd_text}</div>", unsafe_allow_html=True)
+        # Render Chart
+        if st.session_state.score_history:
+            fig = plot_debate_flow(st.session_state.score_history)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    with col3:
+        st.metric(f"{st.session_state.persona} Health", f"{st.session_state.ai_hp}%")
+        st.progress(st.session_state.ai_hp/100)
+    st.divider()
 
-    # Game Over Logic
+# --- MODE 1: USER VS AI ---
+if st.session_state.mode == "User":
+    
+    # Game Over
     if st.session_state.user_hp <= 0 or st.session_state.ai_hp <= 0:
         winner = "YOU" if st.session_state.user_hp > 0 else "AI"
-        st.header(f"🏁 DEBATE OVER! Winner: {winner}")
+        st.balloons() if winner == "YOU" else None
+        st.error(f"GAME OVER. Winner: {winner}")
         
-        if st.button("Restart Debate"):
-            st.session_state.started = False
-            st.rerun()
-            
-        with st.spinner("Generating Analysis..."):
-            report = engine.generate_final_report(st.session_state.messages, st.session_state.topic)
-            if report:
-                col1, col2 = st.columns(2)
-                with col1: st.success(f"**Best Point:**\n\n{report.best_point_user}")
-                with col2: st.error(f"**Weakest Point:**\n\n{report.weakest_point_user}")
-                st.subheader("💡 Coaching Tips")
-                for tip in report.improvement_tips: st.info(f"• {tip}")
+        if st.button("Analyze Match"):
+            rep = engine.generate_report(st.session_state.messages, st.session_state.topic)
+            st.markdown(f"**Coaching:** {rep.improvement_tips[0]}")
         st.stop()
 
-    # Chat History
+    # Chat
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
+            if "audio" in msg and msg["audio"]:
+                st.audio(msg["audio"], format="audio/mp3")
 
-    # Input Loop
-    if prompt := st.chat_input("Your argument..."):
+    # Input
+    if prompt := st.chat_input("Make your point..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.write(prompt)
-
+        
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with st.spinner(f"{st.session_state.persona} is thinking..."):
+                # 1. Generate Rebuttal
                 rebuttal = engine.generate_rebuttal(
                     st.session_state.topic, prompt, st.session_state.messages, 
-                    st.session_state.persona, st.session_state.difficulty, st.session_state.ai_side
+                    st.session_state.persona, st.session_state.ai_side
                 )
+                
+                # 2. Audio Generation
+                audio_fp = None
+                if enable_audio:
+                    audio_fp = engine.speak(rebuttal)
+                
                 st.write(rebuttal)
-                st.session_state.messages.append({"role": "assistant", "content": rebuttal})
+                if audio_fp: st.audio(audio_fp, format='audio/mp3')
                 
-                # Scoring
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": rebuttal,
+                    "audio": audio_fp
+                })
+                
+                # 3. Judge
                 score = engine.judge_turn(st.session_state.topic, prompt, rebuttal)
-                user_dmg, ai_dmg = 0, 0
                 
-                if score.user_relevance < 50: user_dmg += 15
-                if score.ai_relevance < 50: ai_dmg += 15
-                logic_diff = score.user_logic - score.ai_logic
+                # Update Chart Data
+                st.session_state.score_history.append({
+                    "user_score": score.user_logic,
+                    "ai_score": score.ai_logic
+                })
                 
-                if logic_diff > 0: ai_dmg += int(logic_diff / 2) 
-                elif logic_diff < 0: user_dmg += int(abs(logic_diff) / 2)
-                
-                if score.user_logic > 85: 
-                    ai_dmg += 10
-                    st.toast("🔥 CRITICAL HIT! Superior logic!", icon="🔥")
-                
-                st.session_state.user_hp = max(0, st.session_state.user_hp - user_dmg)
-                st.session_state.ai_hp = max(0, st.session_state.ai_hp - ai_dmg)
-                
-                if user_dmg > 0: st.toast(f"You lost {user_dmg} HP. {score.reasoning}", icon="💔")
-                if ai_dmg > 0: st.toast(f"Opponent lost {ai_dmg} HP!", icon="🎯")
-                
-                time.sleep(1)
+                # Logic Calculation
+                dmg = 0
+                if score.winner == "ai":
+                    dmg = (score.ai_logic - score.user_logic) / 2
+                    st.session_state.user_hp = max(0, int(st.session_state.user_hp - dmg))
+                    st.session_state.crowd_text = f"Ouch! The judge cites {score.fallacies_detected} in your argument!"
+                elif score.winner == "user":
+                    dmg = (score.user_logic - score.ai_logic) / 2
+                    st.session_state.ai_hp = max(0, int(st.session_state.ai_hp - dmg))
+                    st.session_state.crowd_text = "The crowd cheers! Superior logic detected!"
+                else:
+                    st.session_state.crowd_text = "A stalemate! Both sides holding ground."
+
                 st.rerun()
 
-# ==========================================
-# MODE 2: AI VS AI (Simulation Mode)
-# ==========================================
-elif st.session_state.mode == "AI vs AI (Watch & Learn)":
+# --- MODE 2: AI VS AI SIMULATION ---
+elif st.session_state.mode == "Sim":
+    st.subheader(f"🍿 Spectator Mode: {st.session_state.p1} vs {st.session_state.p2}")
     
-    st.subheader(f"🏟️ Exhibition Match: {st.session_state.persona_1} vs {st.session_state.persona_2}")
-    st.caption(f"Topic: {st.session_state.topic}")
+    # Placeholder for the chart to update in real-time
+    chart_spot = st.empty()
+    chat_spot = st.container()
     
-    # Container for the chat
-    chat_container = st.container()
-    
-    # We use a button loop here to trigger the generation once
-    if "sim_running" in st.session_state and st.session_state.sim_running:
-        
+    if st.session_state.sim_active:
         history = []
         
-        # 1. Opening Statement (Proponent)
-        with chat_container:
-            with st.chat_message("user", avatar="🔵"): # Blue for Proponent
-                with st.spinner(f"{st.session_state.persona_1} is opening..."):
-                    opening = engine.generate_opening(st.session_state.topic, st.session_state.persona_1, "IN FAVOUR")
-                    st.write(f"**{st.session_state.persona_1}:** {opening}")
-                    history.append({"role": st.session_state.persona_1, "content": opening})
-            
-            last_arg = opening
-            
-            # 2. Debate Rounds (4 Rounds)
-            rounds = 4
-            for i in range(rounds):
-                # Opponent Rebuts
-                time.sleep(1.5)
-                with st.chat_message("assistant", avatar="🔴"): # Red for Opponent
-                    with st.spinner(f"{st.session_state.persona_2} is thinking..."):
-                        rebuttal_con = engine.generate_rebuttal(
-                            st.session_state.topic, last_arg, history, 
-                            st.session_state.persona_2, "Hard", "AGAINST"
-                        )
-                        st.write(f"**{st.session_state.persona_2}:** {rebuttal_con}")
-                        history.append({"role": st.session_state.persona_2, "content": rebuttal_con})
-                        last_arg = rebuttal_con
-
-                # Proponent Rebuts back
-                if i < rounds - 1: # Don't rebut on the very last turn to end cleanly
-                    time.sleep(1.5)
-                    with st.chat_message("user", avatar="🔵"):
-                        with st.spinner(f"{st.session_state.persona_1} is thinking..."):
-                            rebuttal_pro = engine.generate_rebuttal(
-                                st.session_state.topic, last_arg, history, 
-                                st.session_state.persona_1, "Hard", "IN FAVOUR"
-                            )
-                            st.write(f"**{st.session_state.persona_1}:** {rebuttal_pro}")
-                            history.append({"role": st.session_state.persona_1, "content": rebuttal_pro})
-                            last_arg = rebuttal_pro
-
-        st.session_state.sim_running = False # Stop loop
-        st.success("✅ Simulation Complete!")
+        # Round 1: P1 Opens
+        with chat_spot:
+            with st.chat_message("user", avatar="🔵"):
+                opening = engine.generate_rebuttal(st.session_state.topic, "Start debate", [], st.session_state.p1, "For")
+                st.write(f"**{st.session_state.p1}:** {opening}")
+                history.append({"role": "user", "content": opening})
         
-        # Generate Analysis of the Match
-        with st.expander("📊 View Judge's Analysis", expanded=True):
-            with st.spinner("Analyzing the debate logic..."):
-                # We reuse the final report engine but tweak the prompt internally via context
-                formatted_hist = [{"role": m["role"], "content": m["content"]} for m in history]
-                report = engine.generate_final_report(formatted_hist, st.session_state.topic)
+        prev_arg = opening
+        
+        # Loop for 4 Rounds
+        for i in range(4):
+            time.sleep(1)
+            
+            # P2 Rebuts
+            with chat_spot:
+                with st.chat_message("assistant", avatar="🔴"):
+                    with st.spinner(f"{st.session_state.p2} is retorting..."):
+                        reb_2 = engine.generate_rebuttal(st.session_state.topic, prev_arg, history, st.session_state.p2, "Against")
+                        st.write(f"**{st.session_state.p2}:** {reb_2}")
+                        history.append({"role": "assistant", "content": reb_2})
+            
+            # Judge P2's Move for Chart
+            score = engine.judge_turn(st.session_state.topic, prev_arg, reb_2)
+            st.session_state.score_history.append({"user_score": score.user_logic, "ai_score": score.ai_logic})
+            
+            # Update Chart Live
+            with chart_spot:
+                fig = plot_debate_flow(st.session_state.score_history)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            prev_arg = reb_2
+            time.sleep(1)
+            
+            # P1 Rebuts Back (unless last round)
+            if i < 3:
+                with chat_spot:
+                    with st.chat_message("user", avatar="🔵"):
+                        with st.spinner(f"{st.session_state.p1} is thinking..."):
+                            reb_1 = engine.generate_rebuttal(st.session_state.topic, prev_arg, history, st.session_state.p1, "For")
+                            st.write(f"**{st.session_state.p1}:** {reb_1}")
+                            history.append({"role": "user", "content": reb_1})
                 
-                if report:
-                    st.markdown(f"""
-                    ### 🏆 Winner: {report.winner}
+                # Judge P1's Move
+                score = engine.judge_turn(st.session_state.topic, reb_1, prev_arg)
+                # Flip logic scores because P1 is 'user' in our schema
+                st.session_state.score_history.append({"user_score": score.ai_logic, "ai_score": score.user_logic}) 
+                
+                with chart_spot:
+                    fig = plot_debate_flow(st.session_state.score_history)
+                    st.plotly_chart(fig, use_container_width=True)
                     
-                    **Strongest Argument (Proponent):**
-                    > {report.best_point_user}
-                    
-                    **Weakest Moment:**
-                    > {report.weakest_point_user}
-                    
-                    **Key Takeaways for Students:**
-                    """)
-                    for tip in report.improvement_tips:
-                        st.markdown(f"- {tip}")
-    
-    # If sim is done, offer reset
-    if not st.session_state.sim_running:
-         if st.button("Reset / New Simulation"):
-             st.session_state.started = False
-             st.rerun()
+                prev_arg = reb_1
+
+        st.session_state.sim_active = False
+        st.success("Simulation Finished!")
+        if st.button("Clear Arena"):
+            st.session_state.started = False
+            st.rerun()
