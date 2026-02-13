@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from typing import List
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="AI Debate Arena 3.0", page_icon="🎤", layout="wide")
+st.set_page_config(page_title="AI Debate Arena 3.1", page_icon="🎤", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -74,7 +74,8 @@ class DebateEngine:
     def transcribe_audio(self, audio_file):
         """Uses Gemini to transcribe audio bytes to text"""
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            # FIXED: Trying a more standard model name if the specific one fails
+            model = genai.GenerativeModel("gemini-2.5-flash") 
             audio_bytes = audio_file.read()
             prompt = "Transcribe this audio exactly as spoken. Do not add any commentary."
             response = model.generate_content([
@@ -83,7 +84,8 @@ class DebateEngine:
             ])
             return response.text
         except Exception as e:
-            st.error(f"Transcription failed: {e}")
+            # Fallback for transcription errors
+            st.error(f"Transcription Error: {e}")
             return None
 
     def _safe_invoke(self, chain, inputs, retries=3):
@@ -169,7 +171,7 @@ if "session_id" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Arena 3.0")
+    st.title("⚙️ Arena 3.1")
     mode = st.radio("Mode:", ["User vs AI", "AI vs AI (Simulation)"])
     enable_audio = st.toggle("Enable AI Voice 🔊", value=True)
     
@@ -235,7 +237,7 @@ with st.sidebar:
             st.rerun()
 
 # --- MAIN UI ---
-st.title("⚔️ AI Debate Arena 3.0")
+st.title("⚔️ AI Debate Arena 3.1")
 
 if not st.session_state.started:
     st.info("👈 Configure the arena sidebar to begin.")
@@ -275,15 +277,14 @@ if st.session_state.mode == "User":
             if "audio" in msg and msg["audio"]:
                 st.audio(msg["audio"], format="audio/mp3")
 
-    # --- NEW FEATURE: VOICE & TEXT INPUT ---
-    # We use a container to keep input at bottom
+    # --- INPUT AREA (TEXT OR VOICE) ---
     st.markdown("### Make your move")
     
+    # Text Input first (to ensure layout stability)
+    text_input = st.chat_input("...or type your argument here")
+
     # Voice Input
     voice_input = st.audio_input("🎤 Tap to Speak")
-    
-    # Text Input
-    text_input = st.chat_input("...or type your argument here")
 
     # Logic to handle inputs
     final_prompt = None
