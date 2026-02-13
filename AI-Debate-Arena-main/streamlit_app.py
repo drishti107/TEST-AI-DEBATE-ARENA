@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from typing import List
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="AI Debate Arena 5.0", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="AI Debate Arena 7.0", page_icon="⚔️", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""
@@ -21,7 +21,7 @@ st.markdown("""
     .stProgress > div > div > div > div { background-color: #00FF41; }
     .ai-health > div > div > div > div { background-color: #FF4B4B; }
     .crowd-reaction { font-style: italic; color: #FFD700; text-align: center; font-size: 0.9em; }
-    .stat-box { background: #1E1E1E; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 10px; }
+    .timer-box { font-size: 1.5em; font-weight: bold; color: #FF4B4B; text-align: center; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,13 +91,12 @@ class DebateEngine:
 
     def generate_rebuttal(self, topic, argument, history, persona, stance):
         hist_text = "\n".join([f"{m['role']}: {m['content']}" for m in history[-4:]])
-        
         template = f"""
         You are {{persona}}. Topic: {{topic}}. Stance: {{stance}}.
         History: {{hist_text}}
         Opponent says: "{{argument}}"
         
-        Reply directly. Be sharp, witty, and logical. 
+        Reply directly to the point. Be sharp and logical. 
         Max 3 sentences.
         """
         try:
@@ -109,8 +108,10 @@ class DebateEngine:
 
     def judge_turn(self, topic, user_arg, ai_arg, time_taken):
         penalty_text = ""
-        if time_taken > 20:
-            penalty_text = f"NOTE: The User took {time_taken} seconds to reply. PENALIZE their logic score slightly for hesitation."
+        if time_taken > 90:
+            penalty_text = f"SEVERE PENALTY: The User took {time_taken} seconds (Over 1m 30s). Deduct 20 points from their logic score."
+        elif time_taken > 45:
+             penalty_text = f"NOTE: The User took {time_taken} seconds. Apply minor penalty for hesitation."
             
         template = f"""
         Judge turn. Topic: {{topic}}.
@@ -159,6 +160,41 @@ def plot_radar(logic, speed_score, aggression):
     )
     return fig
 
+# --- HELPER: JS TIMER ---
+def display_timer():
+    timer_html = """
+        <div style="text-align: center; margin-bottom: 10px;">
+            <span style="font-size: 1.5em; font-weight: bold; color: #FF4B4B;">⏳ Pressure Timer: <span id="time">01:30</span></span>
+        </div>
+        <script>
+        function startTimer(duration, display) {
+            var timer = duration, minutes, seconds;
+            var interval = setInterval(function () {
+                minutes = parseInt(timer / 60, 10);
+                seconds = parseInt(timer % 60, 10);
+
+                minutes = minutes < 10 ? "0" + minutes : minutes;
+                seconds = seconds < 10 ? "0" + seconds : seconds;
+
+                display.textContent = minutes + ":" + seconds;
+
+                if (--timer < 0) {
+                    display.textContent = "TIME UP!";
+                    display.style.color = "red";
+                    clearInterval(interval);
+                }
+            }, 1000);
+        }
+
+        window.onload = function () {
+            var ninetySeconds = 90,
+                display = document.querySelector('#time');
+            startTimer(ninetySeconds, display);
+        };
+        </script>
+    """
+    st.components.v1.html(timer_html, height=60)
+
 # --- SESSION STATE ---
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -170,26 +206,25 @@ if "session_id" not in st.session_state:
     st.session_state.crowd_text = "The arena is silent..."
     st.session_state.last_processed = "" 
     st.session_state.start_time = time.time()
-    
-    # Stats
     st.session_state.avg_logic = 50
     st.session_state.avg_speed = 50
+    st.session_state.audio_key = "audio_1" # To reset audio widget
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.title("⚙️ Arena 5.0")
+    st.title("⚙️ Arena 7.0")
     mode = st.radio("Mode:", ["User vs AI", "AI vs AI (Simulation)"])
     enable_audio = st.toggle("Enable AI Voice 🔊", value=True)
     
     st.divider()
     
-    # ANALYTICS CHART
+    # RADAR CHART
     if mode == "User vs AI" and st.session_state.started:
-        st.caption("📊 Your Performance Radar")
+        st.caption("📊 Performance Stats")
         fig = plot_radar(st.session_state.avg_logic, st.session_state.avg_speed, 75)
         st.plotly_chart(fig, use_container_width=True)
     
-    # HISTORY LOGS
+    # HISTORY
     with st.expander("📜 Debate Logs"):
         if st.session_state.messages:
             log_text = f"TOPIC: {st.session_state.get('topic', 'N/A')}\n\n"
@@ -202,7 +237,6 @@ with st.sidebar:
 
     st.divider()
     
-    # SURPRISE TOPIC
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
         topic_input = st.text_input("Topic:", "Universal Basic Income")
@@ -220,7 +254,6 @@ with st.sidebar:
         st.info(f"Selected: {final_topic}")
 
     if mode == "User vs AI":
-        # REMOVED "Roast Master" from this list
         persona = st.selectbox("Opponent:", ["Logical Vulcan", "Sarcastic Troll", "Philosopher", "Devil's Advocate"])
         ai_side = st.radio("AI Stance:", ["Against", "For"])
         who_starts = st.radio("Who starts?", ["Me (User)", "AI (Opponent)"], index=0)
@@ -238,6 +271,8 @@ with st.sidebar:
             st.session_state.last_processed = "" 
             st.session_state.start_time = time.time()
             st.session_state.avg_logic = 50
+            # RESET AUDIO WIDGET KEY
+            st.session_state.audio_key = str(uuid.uuid4())
             
             if who_starts == "AI (Opponent)":
                  with st.spinner(f"{persona} is preparing..."):
@@ -263,7 +298,7 @@ with st.sidebar:
             st.rerun()
 
 # --- MAIN UI ---
-st.title("⚔️ AI Debate Arena 5.0")
+st.title("⚔️ AI Debate Arena 7.0")
 
 if not st.session_state.started:
     st.info("👈 Configure the arena sidebar to begin.")
@@ -284,6 +319,8 @@ if st.session_state.mode == "User":
 
 # --- MODE 1: USER VS AI ---
 if st.session_state.mode == "User":
+    
+    # Game Over Check
     if st.session_state.user_hp <= 0 or st.session_state.ai_hp <= 0:
         winner = "YOU" if st.session_state.user_hp > 0 else "AI"
         st.balloons() if winner == "YOU" else None
@@ -293,39 +330,57 @@ if st.session_state.mode == "User":
             if rep: st.markdown(f"**Coaching:** {rep.improvement_tips[0]}")
         st.stop()
 
+    # Render History
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             if "audio" in msg and msg["audio"]:
                 st.audio(msg["audio"], format="audio/mp3")
 
-    # INPUT AREA
+    # Check Turn State
+    # If the last message was from the AI, it is the USER'S turn.
+    is_user_turn = True
+    if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
+        is_user_turn = False # It's AI turn (should handle via rerun, but logic below handles it)
+
+    # --- INPUT AREA ---
     st.markdown("### Make your move")
-    
-    # Calculate Time Since Last Turn
+    display_timer()
     time_elapsed = int(time.time() - st.session_state.start_time)
     
+    # Inputs
     text_input = st.chat_input("Type argument...")
-    voice_input = st.audio_input("🎤 Tap to Speak")
+    voice_input = st.audio_input("🎤 Tap to Speak", key=st.session_state.audio_key)
 
+    # Logic to Determine Prompt
     final_prompt = None
-    if voice_input:
+    
+    # 1. Prioritize Text Input (resets on submit)
+    if text_input:
+        final_prompt = text_input
+    # 2. Check Voice Input if no text
+    elif voice_input:
         with st.spinner("Transcribing..."):
             transcribed = engine.transcribe_audio(voice_input)
-            if transcribed: final_prompt = transcribed
-    elif text_input:
-        final_prompt = text_input
+            # Only use if new
+            if transcribed and transcribed != st.session_state.last_processed:
+                final_prompt = transcribed
 
+    # Processing Loop
     if final_prompt:
-        if final_prompt == st.session_state.last_processed:
-            pass
+        # Extra Safety: Don't process if the LAST message was already the user (prevents double submission)
+        if st.session_state.messages and st.session_state.messages[-1]['role'] == 'user':
+            pass # Ignore, wait for AI to finish
         else:
+            # Commit User Move
             st.session_state.last_processed = final_prompt
             st.session_state.messages.append({"role": "user", "content": final_prompt})
             
             # --- AI TURN ---
             with st.chat_message("assistant"):
                 with st.spinner(f"{st.session_state.persona} is thinking..."):
+                    time.sleep(1.0) # Artificial pause for realism
+                    
                     rebuttal = engine.generate_rebuttal(
                         st.session_state.topic, final_prompt, st.session_state.messages, 
                         st.session_state.persona, st.session_state.ai_side
@@ -342,21 +397,28 @@ if st.session_state.mode == "User":
                     
                     # Update Stats
                     st.session_state.avg_logic = (st.session_state.avg_logic + score.user_logic) / 2
-                    speed_val = max(0, 100 - (time_elapsed * 2))
+                    speed_val = max(0, 100 - time_elapsed)
                     st.session_state.avg_speed = (st.session_state.avg_speed + speed_val) / 2
                     
-                    # Apply Damage
-                    dmg = 0
+                    # Damage Calculation
+                    user_dmg = 0
+                    ai_dmg = 0
+                    
                     if score.winner == "ai":
-                        dmg = (score.ai_logic - score.user_logic) / 2
-                        st.session_state.user_hp = max(0, int(st.session_state.user_hp - dmg))
+                        user_dmg = int((score.ai_logic - score.user_logic) / 2)
+                        st.session_state.user_hp = max(0, st.session_state.user_hp - user_dmg)
                         st.session_state.crowd_text = f"Ouch! {score.fallacies_detected} detected!"
+                        st.toast(f"💥 OUCH! You took {user_dmg} damage!", icon="🩸")
+                        
                     elif score.winner == "user":
-                        dmg = (score.user_logic - score.ai_logic) / 2
-                        st.session_state.ai_hp = max(0, int(st.session_state.ai_hp - dmg))
+                        ai_dmg = int((score.user_logic - score.ai_logic) / 2)
+                        st.session_state.ai_hp = max(0, st.session_state.ai_hp - ai_dmg)
                         st.session_state.crowd_text = "Superior logic! Crowd cheers!"
+                        st.toast(f"🎯 BULLSEYE! Opponent took {ai_dmg} damage!", icon="🔥")
+                        
                     else:
                         st.session_state.crowd_text = "Even exchange."
+                        st.toast("🛡️ Stalemate.", icon="🛡️")
                     
                     # Reset Timer
                     st.session_state.start_time = time.time()
