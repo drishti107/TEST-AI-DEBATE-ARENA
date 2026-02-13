@@ -1,6 +1,7 @@
 streamlit
-langchain
-langchain-core
+plotly
+gtts
 langchain-google-genai
-google-generativeai
+langchain-core
 pydantic
+pandas
